@@ -52,6 +52,7 @@ const CELLS: &[(usize, usize)] = &[
     (16 * KIB, 1),
     (16 * KIB, 16),
     (16 * KIB, 64),
+    (16 * KIB, 256),
     (MIB, 1),
     (MIB, 8),
 ];
@@ -66,6 +67,15 @@ fn planned_round_trips(payload_size: usize) -> usize {
         1_000
     }
 }
+
+/// Round trips every connection performs, however many connections there are.
+///
+/// Splitting a fixed budget across connections leaves the deepest cells with a
+/// handful of samples each, so they report connection ramp-up rather than
+/// steady state and cannot support a tail percentile at all. Keep enough
+/// samples per connection for the tail to mean something, at the cost of more
+/// total work as concurrency grows.
+const MIN_ROUND_TRIPS_PER_CONNECTION: usize = 100;
 
 type TokioWebSocket = TokioWebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -394,7 +404,7 @@ fn main() {
     for &(payload_size, concurrency) in CELLS {
         let per_connection = planned_round_trips(payload_size)
             .div_ceil(concurrency)
-            .max(1);
+            .max(MIN_ROUND_TRIPS_PER_CONNECTION);
         println!(
             "\npayload {}, {concurrency} connection(s), {} round trips each",
             format_bytes(payload_size),
