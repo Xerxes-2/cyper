@@ -83,12 +83,6 @@ impl Listener for TcpListener {
         // hyper writes to the socket directly rather than through the
         // Compio-to-futures adapter and its intermediate buffer. Vectored
         // writes and TCP half-close are preserved.
-        //
-        // Unix only. On Windows `PollFd` funnels every readiness kind through a
-        // single `WSAEventSelect` registration, which hyper's concurrent reads
-        // and writes on one socket do not survive: responses arrive truncated
-        // as `hyper::Error(IncompleteMessage)`. Keep the buffered path there.
-        #[cfg(unix)]
         {
             // The non-blocking flag belongs to the socket, so every handle to it
             // observes the change. Set it while the just-accepted `io` is the only
@@ -111,8 +105,6 @@ impl Listener for TcpListener {
             }
         }
 
-        #[cfg(not(unix))]
-        HyperStream::new_plain(io)
     }
 }
 
@@ -641,7 +633,7 @@ impl<R, T: hyper::service::Service<R>> hyper::service::Service<R> for ServiceSen
 }
 
 // The readiness path is Unix-only, so its tests are too.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use std::{
         io::{IoSlice, Read as _},

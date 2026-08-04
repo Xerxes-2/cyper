@@ -664,8 +664,6 @@ mod tests {
             })
         }
 
-        // Only Unix takes the readiness path; Windows keeps the buffered one.
-        #[cfg(unix)]
         #[compio::test]
         async fn tcp_upgrade_uses_compat_io() {
             use std::sync::{

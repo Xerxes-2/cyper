@@ -39,3 +39,21 @@ axum = { version = "0.8.1", default-features = false }
 hickory-net = { version = "0.26", default-features = false }
 hickory-resolver = { version = "0.26", default-features = false }
 hickory-server = { version = "0.26" }
+
+# Probe only: pick up the Windows PollFd fix from compio-rs/compio#999.
+[patch.crates-io]
+compio = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-buf = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-driver = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-executor = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-fs = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-io = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-log = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-macros = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-net = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-process = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-quic = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-runtime = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-signal = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-tls = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }
+compio-ws = { git = "https://github.com/Berrysoft/compio.git", rev = "31ecaf7fc3248013721f5840792331d29e0da357" }

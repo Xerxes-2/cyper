@@ -5,6 +5,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
+use compio::buf::{IoBufMutExt, SetLenExt};
 use compio::{
     BufResult,
     buf::{IoBuf, IoBufMut, IoVectoredBuf},

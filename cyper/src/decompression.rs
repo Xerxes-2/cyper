@@ -1,5 +1,6 @@
 use std::io;
 
+use compio::buf::SetLenExt;
 use async_stream::try_stream;
 use compio::bytes::Bytes;
 use compression_codecs::{
