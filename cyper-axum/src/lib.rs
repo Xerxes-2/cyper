@@ -54,6 +54,11 @@ pub trait Listener: 'static {
 
     /// Returns the local address that this listener is bound to.
     fn local_addr(&self) -> io::Result<Self::Addr>;
+
+    /// Converts an accepted connection into an IO type used by hyper.
+    fn into_hyper_stream(io: Self::Io) -> HyperStream<Self::Io> {
+        HyperStream::new_plain(io)
+    }
 }
 
 impl Listener for TcpListener {
@@ -71,6 +76,33 @@ impl Listener for TcpListener {
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
         Self::local_addr(self)
+    }
+
+    fn into_hyper_stream(io: Self::Io) -> HyperStream<Self::Io> {
+        // Reuse the socket's shared descriptor instead of duplicating it, so
+        // hyper writes to the socket directly rather than through the
+        // Compio-to-futures adapter and its intermediate buffer. Vectored
+        // writes and TCP half-close are preserved.
+        //
+        // The non-blocking flag belongs to the socket, so every handle to it
+        // observes the change. Set it while the just-accepted `io` is the only
+        // handle and no `PollFd` exists yet. On failure `io` is untouched and
+        // the buffered path still works.
+        match socket2::SockRef::from(&io)
+            .set_nonblocking(true)
+            .and_then(|()| io.to_poll_fd())
+        {
+            Ok(poll_fd) => {
+                // `poll_fd` shares the descriptor with `io`. Release `io` here so the
+                // readiness path owns the only remaining handle to it.
+                drop(io);
+                HyperStream::new_plain_compat(poll_fd, true)
+            }
+            Err(error) => {
+                warn!("failed to enable readiness-based TCP IO; using buffered IO: {error}");
+                HyperStream::new_plain(io)
+            }
+        }
     }
 }
 
@@ -285,7 +317,7 @@ where
             loop {
                 let (io, remote_addr) = listener.accept().await;
 
-                let io = HyperStream::new_plain(io);
+                let io = L::into_hyper_stream(io);
 
                 poll_fn(|cx| make_service.poll_ready(cx))
                     .await
@@ -416,7 +448,7 @@ where
                     }
                 };
 
-                let io = HyperStream::new_plain(io);
+                let io = L::into_hyper_stream(io);
 
                 trace!("connection {remote_addr:?} accepted");
 
@@ -595,5 +627,45 @@ impl<R, T: hyper::service::Service<R>> hyper::service::Service<R> for ServiceSen
 
     fn call(&self, req: R) -> Self::Future {
         SendWrapper::new(self.0.call(req))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{IoSlice, Read as _},
+        net::Ipv4Addr,
+        time::Duration,
+    };
+
+    use futures_util::AsyncWriteExt as _;
+
+    use super::*;
+
+    #[compio::test]
+    async fn compat_tcp_vectored_write_and_half_close() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0u16))
+            .await
+            .unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let poll_fd = server.to_poll_fd().unwrap();
+        poll_fd.set_nonblocking(true).unwrap();
+        drop(server);
+        let mut stream = HyperStream::<TcpStream>::new_plain_compat(poll_fd, true);
+
+        assert!(hyper::rt::Write::is_write_vectored(&stream));
+        let bufs = [IoSlice::new(b"hello "), IoSlice::new(b"world")];
+        let written = stream.write_vectored(&bufs).await.unwrap();
+        assert!(written > 0);
+        stream.write_all(&b"hello world"[written..]).await.unwrap();
+        stream.close().await.unwrap();
+
+        let mut received = Vec::new();
+        client.read_to_end(&mut received).unwrap();
+        assert_eq!(received, b"hello world");
     }
 }

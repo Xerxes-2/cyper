@@ -32,20 +32,27 @@
 //! # let _: Router = app;
 //! ```
 
-use std::{borrow::Cow, collections::BTreeSet, future::Future};
+use std::{
+    borrow::Cow,
+    collections::BTreeSet,
+    future::Future,
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use async_tungstenite::{
     WebSocketStream,
     tungstenite::{self as ts, protocol::WebSocketConfig},
 };
 use axum_core::{body::Body, extract::FromRequestParts, response::Response};
+use cyper_core::HyperStream;
 use futures_util::StreamExt;
 use hyper::{
     Method, StatusCode, Version,
     header::{self, HeaderMap, HeaderName, HeaderValue},
     http::request::Parts,
 };
-use send_wrapper::SendWrapper;
 use sha1::{Digest, Sha1};
 // Re-export tungstenite types for convenience.
 pub use ts::protocol::frame::coding::CloseCode;
@@ -59,7 +66,7 @@ use self::{compat::FuturesIo, rejection::*};
 ///
 /// Use [`recv`](Self::recv) and [`send`](Self::send) to communicate.
 pub struct WebSocket {
-    inner: WebSocketStream<FuturesIo<hyper::upgrade::Upgraded>>,
+    inner: WebSocketStream<UpgradedIo>,
     protocol: Option<HeaderValue>,
 }
 
@@ -281,7 +288,7 @@ impl<F> WebSocketUpgrade<F> {
         let on_failed_upgrade = self.on_failed_upgrade;
         let protocol = self.protocol.clone();
 
-        compio::runtime::spawn(SendWrapper::new(async move {
+        compio::runtime::spawn(async move {
             let upgraded = match on_upgrade.await {
                 Ok(upgraded) => upgraded,
                 Err(err) => {
@@ -290,7 +297,13 @@ impl<F> WebSocketUpgrade<F> {
                 }
             };
 
-            let upgraded = FuturesIo::new(upgraded);
+            let upgraded = match hyper_util::server::conn::auto::upgrade::downcast::<
+                Pin<Box<HyperStream<compio::net::TcpStream>>>,
+            >(upgraded)
+            {
+                Ok(parts) => UpgradedIo::Direct(RewindIo::new(parts.io, parts.read_buf)),
+                Err(upgraded) => UpgradedIo::Fallback(FuturesIo::new(upgraded)),
+            };
             let ws = WebSocketStream::from_raw_socket(
                 upgraded,
                 ts::protocol::Role::Server,
@@ -302,7 +315,7 @@ impl<F> WebSocketUpgrade<F> {
                 protocol,
             };
             callback(socket).await;
-        }))
+        })
         .detach();
 
         let mut response = if let Some(sec_websocket_key) = &self.sec_websocket_key {
@@ -446,6 +459,117 @@ fn sign(key: &[u8]) -> HeaderValue {
     HeaderValue::from_maybe_shared(b64).expect("base64 is a valid value")
 }
 
+type DirectIo = RewindIo<Pin<Box<HyperStream<compio::net::TcpStream>>>>;
+
+enum UpgradedIo {
+    Direct(DirectIo),
+    Fallback(FuturesIo<hyper::upgrade::Upgraded>),
+}
+
+impl futures_util::AsyncRead for UpgradedIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            Self::Direct(io) => Pin::new(io).poll_read(cx, buf),
+            Self::Fallback(io) => Pin::new(io).poll_read(cx, buf),
+        }
+    }
+}
+
+impl futures_util::AsyncWrite for UpgradedIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            Self::Direct(io) => Pin::new(io).poll_write(cx, buf),
+            Self::Fallback(io) => Pin::new(io).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            Self::Direct(io) => Pin::new(io).poll_write_vectored(cx, bufs),
+            Self::Fallback(io) => Pin::new(io).poll_write_vectored(cx, bufs),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Direct(io) => Pin::new(io).poll_flush(cx),
+            Self::Fallback(io) => Pin::new(io).poll_flush(cx),
+        }
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Direct(io) => Pin::new(io).poll_close(cx),
+            Self::Fallback(io) => Pin::new(io).poll_close(cx),
+        }
+    }
+}
+
+struct RewindIo<T> {
+    inner: T,
+    prefix: ts::Bytes,
+}
+
+impl<T> RewindIo<T> {
+    fn new(inner: T, prefix: ts::Bytes) -> Self {
+        Self { inner, prefix }
+    }
+}
+
+impl<T: futures_util::AsyncRead + Unpin> futures_util::AsyncRead for RewindIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        if !self.prefix.is_empty() {
+            let len = self.prefix.len().min(buf.len());
+            buf[..len].copy_from_slice(&self.prefix[..len]);
+            self.prefix = self.prefix.slice(len..);
+            return Poll::Ready(Ok(len));
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<T: futures_util::AsyncWrite + Unpin> futures_util::AsyncWrite for RewindIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_close(cx)
+    }
+}
+
 mod compat {
     use std::{
         io,
@@ -467,8 +591,8 @@ mod compat {
             cx: &mut Context<'_>,
             buf: &mut [u8],
         ) -> Poll<io::Result<usize>> {
-            // Since `buf` is fully initialized, we use `ReadBuf::new` to store that info in the
-            // `init` field of `ReadBuf`.
+            // Since `buf` is fully initialized, we use `ReadBuf::new` to store that info in
+            // the `init` field of `ReadBuf`.
             let mut read_buf = hyper::rt::ReadBuf::new(buf);
             ready!(hyper::rt::Read::poll_read(
                 Pin::new(&mut self.0),
@@ -503,6 +627,182 @@ mod compat {
         fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             hyper::rt::Write::poll_shutdown(Pin::new(&mut self.0), cx)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::{AsyncRead as _, io::Cursor};
+
+    use super::*;
+
+    #[test]
+    fn websocket_is_send() {
+        fn assert_send<T: Send>() {}
+
+        // `SendWrapper` enforces thread affinity at runtime and will panic if the
+        // WebSocket is accessed or dropped from a different thread.
+        assert_send::<WebSocket>();
+    }
+
+    mod tcp {
+        use std::{net::Ipv4Addr, time::Duration};
+
+        use axum::{Router, routing::any};
+        use compio::net::{TcpListener, TcpStream};
+        use futures_channel::oneshot;
+
+        use super::super::*;
+
+        async fn echo_upgrade(ws: WebSocketUpgrade) -> axum_core::response::Response {
+            ws.on_upgrade(|mut socket| async move {
+                while let Some(Ok(message)) = socket.recv().await {
+                    if socket.send(message).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        }
+
+        #[compio::test]
+        async fn tcp_upgrade_uses_compat_io() {
+            use std::sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            };
+
+            use compio::ws::tungstenite::Message as ClientMessage;
+
+            let uses_compat_io = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&uses_compat_io);
+            let app = Router::new().route(
+                "/ws",
+                any(move |ws: WebSocketUpgrade| {
+                    let observed = Arc::clone(&observed);
+                    async move {
+                        ws.on_upgrade(move |mut socket| async move {
+                            observed.store(
+                                matches!(
+                                    socket.inner.get_ref(),
+                                    UpgradedIo::Direct(io)
+                                        if io.inner.as_ref().get_ref().uses_compat_io()
+                                ),
+                                Ordering::SeqCst,
+                            );
+                            if let Some(Ok(message)) = socket.recv().await {
+                                socket.send(message).await.unwrap();
+                            }
+                        })
+                    }
+                }),
+            );
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0u16))
+                .await
+                .unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            compio::runtime::spawn(async move {
+                crate::serve(listener, app)
+                    .with_graceful_shutdown(async move {
+                        shutdown_rx.await.ok();
+                    })
+                    .await
+                    .unwrap();
+            })
+            .detach();
+
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let (mut client, _) = compio::ws::client_async(format!("ws://{addr}/ws"), stream)
+                .await
+                .unwrap();
+            client
+                .send(ClientMessage::Text("probe".into()))
+                .await
+                .unwrap();
+            assert_eq!(
+                client.read().await.unwrap(),
+                ClientMessage::Text("probe".into())
+            );
+            assert!(uses_compat_io.load(Ordering::SeqCst));
+
+            client.close(None).await.ok();
+            drop(shutdown_tx);
+        }
+
+        /// The client sends the upgrade request and the first WebSocket frame
+        /// in a single write, so hyper reads both in one syscall and
+        /// hands the frame back as pre-read bytes. Losing those bytes
+        /// would silently drop the first frame.
+        #[compio::test]
+        async fn pipelined_first_frame_survives_upgrade() {
+            use compio::io::{AsyncRead as _, AsyncWriteExt as _};
+
+            let app = Router::new().route("/ws", any(echo_upgrade));
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0u16))
+                .await
+                .unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            compio::runtime::spawn(async move {
+                crate::serve(listener, app)
+                    .with_graceful_shutdown(async move {
+                        shutdown_rx.await.ok();
+                    })
+                    .await
+                    .unwrap();
+            })
+            .detach();
+
+            // A masked single-frame text message carrying "hi".
+            let frame: [u8; 8] = [0x81, 0x82, 0x00, 0x00, 0x00, 0x00, b'h', b'i'];
+            let mut request = format!(
+                "GET /ws HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: \
+                 websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: \
+                 AAAAAAAAAAAAAAAAAAAAAA==\r\n\r\n"
+            )
+            .into_bytes();
+            request.extend_from_slice(&frame);
+
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream.write_all(request).await.0.unwrap();
+
+            let echoed = compio::time::timeout(Duration::from_secs(10), async {
+                let mut response = Vec::new();
+                loop {
+                    let buf = Vec::with_capacity(256);
+                    let (read, buf) = stream.read(buf).await.unwrap();
+                    assert_ne!(read, 0, "server closed before echoing the pipelined frame");
+                    response.extend_from_slice(&buf);
+                    if response.ends_with(&[0x81, 0x02, b'h', b'i']) {
+                        return;
+                    }
+                }
+            })
+            .await;
+            assert!(echoed.is_ok(), "pipelined first frame was never echoed");
+
+            drop(shutdown_tx);
+        }
+    }
+
+    #[test]
+    fn rewind_io_reads_prefix_before_stream() {
+        let mut io = RewindIo::new(Cursor::new(b"stream"), ts::Bytes::from_static(b"prefix"));
+        let mut cx = Context::from_waker(futures_util::task::noop_waker_ref());
+        let mut prefix = [0; 6];
+        let mut stream = [0; 6];
+
+        assert!(matches!(
+            Pin::new(&mut io).poll_read(&mut cx, &mut prefix),
+            Poll::Ready(Ok(6))
+        ));
+        assert!(matches!(
+            Pin::new(&mut io).poll_read(&mut cx, &mut stream),
+            Poll::Ready(Ok(6))
+        ));
+
+        assert_eq!(&prefix, b"prefix");
+        assert_eq!(&stream, b"stream");
     }
 }
 
