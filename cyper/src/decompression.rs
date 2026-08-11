@@ -1,7 +1,7 @@
 use std::io;
 
 use async_stream::try_stream;
-use compio::bytes::Bytes;
+use compio::{buf::SetLenExt as _, bytes::Bytes};
 use compression_codecs::{
     DecodeV2,
     core::util::{PartialBuffer, WriteBuffer},

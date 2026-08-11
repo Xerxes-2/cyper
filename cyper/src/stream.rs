@@ -7,7 +7,7 @@ use std::{
 
 use compio::{
     BufResult,
-    buf::{IoBuf, IoBufMut, IoVectoredBuf},
+    buf::{IoBuf, IoBufMut, IoBufMutExt as _, IoVectoredBuf},
     io::{AsyncRead, AsyncWrite, util::Splittable},
     net::TcpStream,
     tls::TlsConnector,

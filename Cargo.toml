@@ -39,3 +39,21 @@ axum = { version = "0.8.1", default-features = false }
 hickory-net = { version = "0.26", default-features = false }
 hickory-resolver = { version = "0.26", default-features = false }
 hickory-server = { version = "0.26" }
+
+# TEMPORARY: compio-runtime 0.12.4 predates compio#999, which fixes PollFd on
+# Windows. The whole family is patched together so their APIs stay in sync.
+# Remove once a release containing it is published.
+[patch.crates-io]
+compio = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-buf = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-driver = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-executor = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-fs = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-io = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-log = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-macros = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-net = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-quic = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-runtime = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-tls = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
+compio-ws = { git = "https://github.com/compio-rs/compio", rev = "e13a2d17267b5954917f40a2cc4a43b58f202d5f" }
