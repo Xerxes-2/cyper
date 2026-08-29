@@ -2,6 +2,9 @@
 //!
 //! This crate just provides [`serve`] method, which is an in-place replacement
 //! for `axum::serve`. See [`axum`] crate for its usage.
+//!
+//! Most of the API and documentation below is adapted from `axum::serve`, MIT
+//! licensed, Copyright (c) 2019 axum Contributors.
 
 #![warn(missing_docs)]
 
